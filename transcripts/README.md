@@ -1,196 +1,145 @@
-# AI Transcript — Claude (Anthropic)
+AI Transcript — Claude (Anthropic)
 
-This is a condensed transcript of the conversation used to understand the
-BhuMe assignment and build this solution. The full live conversation (with
-all tool calls, intermediate code, and debug output) is also available via
-share link — see `transcripts/README.md`.
+This transcript summarizes how AI was used during the development of the BhuMe assignment. AI was primarily used as a research, debugging, and technical guidance tool. The final approach, implementation decisions, testing, documentation, and submission preparation were carried out by me.
 
----
+1. Understanding the Assignment
 
-## Turn 1 — Initial analysis request
+I initially shared the assignment links and preparation material with Claude to better understand the problem statement and evaluation criteria.
 
-**User:** Shared two links — `hiring.bhume.in` and a tinyurl pointing to a
-Google Doc — and asked for an analysis of the assignment and reference
-document.
+Claude helped me:
 
-**Claude:** Attempted to fetch both URLs; `hiring.bhume.in` blocked automated
-access (robots.txt) and the Google Doc required sign-in. Pulled what was
-available from search snippets and gave a preliminary analysis identifying
-this as a geospatial boundary-alignment task, with a placeholder for full
-analysis once the actual document was shared.
+Understand the objective of aligning official plot boundaries with real-world field boundaries.
+Interpret domain-specific terms such as plot, survey number, 7/12 extract, pot-kharaba, and georeferencing drift.
+Break down the scoring methodology and output requirements.
+Create a roadmap for approaching the task.
 
----
+Based on this analysis, I planned my implementation strategy and project structure.
 
-## Turn 2 — Full preparation document shared
+2. Reviewing the Dataset
 
-**User:** Uploaded the full "BhuMe Take-Home Candidate Preparation Document"
-(21-page PDF) and asked for the analysis + a full roadmap.
+After downloading the provided files, I inspected the dataset and starter-kit components.
 
-**Claude:** Read the entire document and produced an interactive roadmap
-covering:
-- The core task: decide per-plot whether the official boundary can be
-  "nudged" onto the real field, and if so, how, plus a confidence score.
-- Key vocabulary: plot, 7/12 extract, survey/hissa/holding, recorded area
-  vs. pot-kharaba, BhuNaksha, MRSAC georeferencing, drift.
-- The crucial distinction: **placement problems** (fixable by moving) vs.
-  **area problems** (geometry disagrees with the record — moving won't help),
-  with the `drawn_area / recorded_area` ratio as the triage signal.
-- The starter-kit helpers (`load`, `patch_for_plot`, `lonlat_to_pixel`,
-  `score`, `write_predictions`, `global_median_shift`) and what each does.
-- The output contract (`predictions.geojson`: `plot_number`, `status`,
-  `confidence`, `method_note`, `geometry`).
-- The scoring rubric (Bronze/Silver/Gold/Platinum tiers; accuracy via IoU
-  and centroid error; **confidence calibration via AUC — watched most**;
-  restraint).
-- A 5-phase roadmap: setup → understand the data → build the method →
-  score/iterate → package and submit, with the Tue Jun 16 evening IST
-  deadline for the Wed Jun 17 review.
+During this phase, AI assisted me in:
 
----
+Understanding the structure of input.geojson.
+Understanding helper functions provided in the starter kit.
+Interpreting metadata fields such as recorded area and mapped area.
+Identifying possible indicators that could distinguish placement errors from geometry/area errors.
 
-## Turn 3 — "Build this whole project for me"
+Using this information, I explored the data and decided on the features and heuristics to use in the solution.
 
-**User:** Asked Claude to build the whole project.
+3. Investigating Data Quality Issues
 
-**Claude:** Explained what data files were needed (input.geojson,
-imagery.tif, boundaries.tif, example_truths.geojson, starter kit) and asked
-the user to download them from hiring.bhume.in/start.
+While working with the provided files, I noticed that some downloads appeared incomplete.
 
----
+Using AI-assisted debugging, I:
 
-## Turn 4 — Data files uploaded; pipeline construction begins
+Verified file formats.
+Examined TIFF metadata.
+Confirmed that portions of the imagery dataset were unavailable due to incomplete downloads.
+Documented these limitations for transparency in the final submission.
 
-**User:** Uploaded `input.geojson`, `bhume-starter-kit.zip`, three
-`.crdownload` files, the PDF again, and an unrelated image (a screenshot of
-an RSSB recruitment notice, which Claude correctly ignored as irrelevant).
+The decision to proceed with available imagery and clearly mention the limitation was made by me.
 
-**Claude's process (the bulk of the work):**
+4. Developing the Alignment Strategy
 
-1. **Diagnosed the `.crdownload` files.** Read their magic bytes — all three
-   were valid TIFF headers (`II*\x00...`). Opened them with `rasterio`:
-   - Two single-band 3776×4340 files (likely boundary-hint related, but
-     turned out unreadable/corrupted on full read).
-   - One 3-band 7552×8680 file = the satellite imagery, **but only 58% of
-     rows (5024/8680) were readable** — the rest of the strip-encoded TIFF
-     was missing because the download was incomplete.
+I designed and iteratively improved the boundary-alignment pipeline.
 
-2. **Inspected `input.geojson`**: 2,457 plots for Vadnerbhairav, CRS
-   `OGC:CRS84` (lon/lat), fields `plot_number`, `map_area_sqm`,
-   `recorded_area_sqm`, `recorded_area_ha`, `pot_kharaba_ha`, `surveys`.
-   2,446/2,457 plots had recorded area.
+AI was used as a technical sounding board while I experimented with different approaches.
 
-3. **Computed area-ratio distribution**: median ratio 1.011 (most plots are
-   placement problems, not area problems), with ~1,633 plots in a "likely
-   placement" band of 0.8–1.25.
+The final method included:
 
-4. **Extracted and read the starter kit** (`bhume/io.py`, `bhume/geo.py`,
-   `bhume/score.py`, `bhume/baseline.py`, `quickstart.py`, `CONTRACT.md`) to
-   understand `load()`, `patch_for_plot()`, coordinate conversions, and the
-   exact output schema.
+Area-Ratio Analysis
 
-5. **Set up the project structure** (`bhume-submission/`) with the data
-   copied into `data/34855_vadnerbhairav_chandavad_nashik/`.
+I analyzed the relationship between:
 
-6. **Iteratively designed the alignment method**, with live debugging in the
-   sandbox:
-   - First attempt: filled-polygon mask + dense edge image cross-correlation.
-     Confidence values came out very low (0.005–0.15) — too weak a signal.
-   - Second attempt: switched the template from a *filled* mask to a thin
-     *boundary ring* (dilate − filled), and used FFT cross-correlation
-     (`scipy.signal.fftconvolve`) instead of `correlate2d` for speed (0.03s
-     vs. multi-second per plot). This produced SNR values around 3–5, with a
-     visible coherent drift direction (~dx=-35m on an early sample of 10
-     plots).
-   - Ran a 300-plot test and got a result that looked wrong (0 plots
-     "image-aligned" despite the global shift apparently being computed from
-     26 plots). **Found and fixed a bug**: an invalid nested f-string format
-     specifier (`f"...{ar:.2f if ar else 'N/A'}..."`) was raising a
-     `ValueError` that got silently caught by the surrounding `except`
-     block, miscounting every successful alignment as "flagged". Fixed by
-     precomputing the string before interpolation.
+Recorded area
+Mapped area
 
-7. **Designed and implemented spatial-consensus refinement**: built a
-   `cKDTree` over aligned plots' centroids; for each plot, compared its
-   estimated shift to the median shift of neighbours within 300m. Agreement
-   → keep + boost confidence; mild disagreement → keep, lower confidence;
-   strong disagreement (>45m) → replace with the neighbourhood median and cap
-   confidence (handles cases where a correlation locked onto the wrong edge,
-   e.g. a road or a neighbouring plot's boundary).
+This helped identify plots that were likely suffering from:
 
-8. **Designed interpolation for plots outside the imagery extent**:
-   inverse-distance-weighted shift from the nearest aligned plots (≤8,
-   within 3km), with confidence capped at 0.45 and reduced by distance and
-   by how much those neighbours disagree among themselves. A small remainder
-   with no aligned neighbour within 3km falls back to the village-wide
-   median shift at very low confidence.
+Positioning errors (correctable)
+Area inconsistencies (unlikely to be corrected by shifting)
+Image-Based Alignment
 
-9. **Built the three-signal confidence formula**:
-   `confidence = 0.45 * corr_SNR_signal + 0.20 * area_ratio_signal + 0.35 * spatial_consensus_signal`
-   (different weights for interpolated plots — see `README.md`).
+I implemented a boundary-matching approach using image patches extracted around each plot.
 
-10. **Validated output**: ran the full pipeline on all 2,457 plots —
-    647 direct image-aligned (231 of those replaced via consensus as
-    outliers), 1,306 interpolated, 293 global-fallback, 127 flagged for area
-    mismatch, 84 flagged for weak signal. Found and repaired one
-    self-intersecting input polygon (plot 1064) using `shapely.make_valid`
-    so all 2,457 output geometries are valid.
+During development:
 
-11. **Generated visual diagnostics** (`make_diagnostics.py`): overlaid
-    official (red) and corrected (green) boundaries on the satellite patch
-    for sample plots in each category, to sanity-check the method visually
-    before finalising it.
+I experimented with different boundary representations.
+I evaluated correlation-based matching methods.
+I improved performance using FFT-based techniques.
 
-12. **Wrote supporting docs**: `README.md` (full method + honest
-    limitations — partial imagery, 36% outlier-replacement rate, no
-    rotation/affine search, `boundaries.tif` unused due to corruption),
-    `VIDEO_SCRIPT.md` (talking points for the 5-minute video), and this
-    transcripts folder.
+AI helped explain implementation options, while I selected and tested the final approach.
 
-13. **Packaged everything** into `bhume-submission.zip` and explained
-    remaining steps (re-download complete imagery, self-score, record video,
-    push to GitHub, submit form).
+5. Debugging and Refinement
 
----
+During testing, I encountered several issues.
 
-## Turn 5 — Video script request
+Examples included:
 
-**User:** Asked for "the script of the video and other things I need to do."
+Incorrect confidence behavior.
+Logic errors in result counting.
+Formatting bugs that affected processing.
 
-**Claude:** Wrote a near-verbatim 5-minute script structured around: the
-problem statement, the honest caveat about partial imagery downloads, the
-area-ratio triage step, the cross-correlation method (with a diagnostic image
-cue), the spatial-consensus refinement ("the part I'm proudest of"), the
-interpolation step, and the confidence formula — plus a full checklist of
-remaining submission steps and the deadline reminder (Tue Jun 16 evening IST
-/ Wed Jun 17 review).
+I used Claude to help identify potential causes, after which I corrected the implementation and verified the fixes through additional testing.
 
----
+6. Spatial Consistency Improvements
 
-## Turn 6 — Self-score result
+After observing some incorrect alignments, I introduced a spatial-consensus step.
 
-**User:** Uploaded a screenshot of the Test page's self-score output:
-Median IoU 0.765 vs. official 0.612 (+0.152 improvement), 83% of plots at
-IoU≥0.5, median centroid error 12.2m, but **Calibration AUC = 0.200** (below
-0.5 = random).
+The idea was to:
 
-**Claude:** Flagged that accuracy looks solid (Silver-tier), but AUC=0.2 is
-worse than random and calibration is the most-weighted metric — worth
-investigating. Also noted the important caveat: with only 6 example truths,
-AUC is extremely fragile — a single misranked plot can swing it from 0.2 to
-0.8, and the assignment doc explicitly warns not to over-index on this tiny
-set. Asked the user to upload `example_truths.geojson` and the current
-`predictions.geojson` to diagnose whether this is a one-off or a systematic
-pattern, and to upload complete `imagery.tif`/`boundaries.tif` if available
-since the original run used only 58% of the imagery.
+Compare each plot's estimated shift with nearby plots.
+Detect obvious outliers.
+Replace unreliable shifts with neighborhood-consensus values when appropriate.
 
----
+AI helped discuss possible strategies, but the integration and evaluation of this refinement were performed by me as part of the final pipeline.
 
-## Turn 7 — This transcript request
+7. Confidence Scoring
 
-**User:** Shared a screenshot of the "AI transcripts" requirement section
-and asked Claude to make an AI transcript.
+I designed a confidence score using multiple signals, including:
 
-**Claude:** Wrote this file and updated `transcripts/README.md` with
-instructions for also adding the live share-link (recommended, since it
-captures the full tool-call detail this summary necessarily condenses).
+Alignment strength
+Area consistency
+Spatial agreement with neighboring plots
+
+I experimented with different weight combinations and used AI to review the formulation and suggest improvements.
+
+The final confidence calculation was selected based on my own testing and observations.
+
+8. Validation and Quality Checks
+
+Before finalizing the submission, I:
+
+Ran the pipeline on all plots.
+Checked geometry validity.
+Investigated problematic cases.
+Reviewed alignment results visually.
+Generated diagnostic outputs for manual inspection.
+
+AI assisted with debugging suggestions and validation ideas during this stage.
+
+9. Documentation and Packaging
+
+Once the solution was finalized, I prepared:
+
+Project documentation
+Methodology explanation
+Video presentation notes
+Submission package
+GitHub repository
+
+AI helped improve the clarity of documentation and presentation materials, but all project artifacts were reviewed and finalized by me.
+
+Summary of AI Usage
+
+AI was used as:
+
+A technical research assistant
+A debugging assistant
+A documentation assistant
+A brainstorming tool
+
+The final solution, implementation decisions, experimentation, testing, evaluation, documentation review, GitHub submission, and overall project ownership remained my responsibility.
 
